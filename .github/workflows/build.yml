@@ -1,0 +1,881 @@
+name: Compilar Navegador Azul
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Criar arquivos do projeto
+        run: |
+          cat > settings.gradle.kts <<'FIM_ARQUIVO_0'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "NavegadorAzul"
+          include(":app")
+          FIM_ARQUIVO_0
+          cat > build.gradle.kts <<'FIM_ARQUIVO_1'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          FIM_ARQUIVO_1
+          cat > gradle.properties <<'FIM_ARQUIVO_2'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          FIM_ARQUIVO_2
+          mkdir -p app
+          cat > app/build.gradle.kts <<'FIM_ARQUIVO_3'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.azul.navegador"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.azul.navegador"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          FIM_ARQUIVO_3
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'FIM_ARQUIVO_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission
+                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="28" />
+
+              <application
+                  android:label="Navegador Azul"
+                  android:hardwareAccelerated="true"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="http" />
+                          <data android:scheme="https" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          FIM_ARQUIVO_4
+          mkdir -p app/src/main/java/com/azul/navegador
+          cat > app/src/main/java/com/azul/navegador/MainActivity.kt <<'FIM_ARQUIVO_5'
+          package com.azul.navegador
+
+          import android.annotation.SuppressLint
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.app.DownloadManager
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.res.ColorStateList
+          import android.graphics.Bitmap
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Bundle
+          import android.os.Environment
+          import android.os.Message
+          import android.text.InputType
+          import android.text.TextUtils
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.view.inputmethod.InputMethodManager
+          import android.webkit.CookieManager
+          import android.webkit.URLUtil
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebSettings
+          import android.webkit.WebStorage
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.ArrayAdapter
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ListView
+          import android.widget.ProgressBar
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import org.json.JSONArray
+          import org.json.JSONObject
+
+          class Tab(val web: WebView, val incognito: Boolean) {
+              // 0 = celular, 1 = computador, 2 = tablet
+              var mode = 0
+          }
+
+          data class Hist(val title: String, val url: String)
+
+          class MainActivity : Activity() {
+
+              private val blue = Color.parseColor("#1976D2")
+              private val dark = Color.parseColor("#0D47A1")
+              private val light = Color.parseColor("#E3F2FD")
+              private val incogColor = Color.parseColor("#37474F")
+              private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+              private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+              private val desktopUA =
+                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+              private val tabletUA =
+                  "Mozilla/5.0 (Linux; Android 13; SM-X700) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var defaultUA: String
+              private lateinit var root: FrameLayout
+              private lateinit var main: LinearLayout
+              private lateinit var topBar: LinearLayout
+              private lateinit var bottomBar: LinearLayout
+              private lateinit var urlBar: EditText
+              private lateinit var progress: ProgressBar
+              private lateinit var holder: FrameLayout
+              private lateinit var tabsBtn: TextView
+
+              private val tabs = mutableListOf<Tab>()
+              private var cur = -1
+              private var user: String = ""
+              private var fast = false
+              private var customView: View? = null
+              private var customCb: WebChromeClient.CustomViewCallback? = null
+
+              // ---------------------------------------------------------------- ciclo de vida
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  prefs = getSharedPreferences("nav", MODE_PRIVATE)
+                  defaultUA = WebSettings.getDefaultUserAgent(this)
+                  fast = prefs.getBoolean("fast", false)
+                  root = FrameLayout(this)
+                  setContentView(root)
+                  val u = prefs.getString("user", null)
+                  if (u.isNullOrBlank()) showLogin() else enter(u)
+              }
+
+              override fun onPause() {
+                  tabs.forEach { it.web.onPause() }
+                  super.onPause()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  tabs.forEach { it.web.onResume() }
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onBackPressed() {
+                  if (customView != null) {
+                      hideCustom()
+                      return
+                  }
+                  if (cur >= 0 && tabs.isNotEmpty()) {
+                      val t = tabs[cur]
+                      if (t.web.canGoBack()) {
+                          t.web.goBack()
+                          return
+                      }
+                      if (tabs.size > 1) {
+                          closeTab(cur)
+                          return
+                      }
+                  }
+                  super.onBackPressed()
+              }
+
+              // ---------------------------------------------------------------- helpers de UI
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun round(color: Int, r: Int) = GradientDrawable().apply {
+                  setColor(color)
+                  cornerRadius = dp(r).toFloat()
+              }
+
+              private fun lp(w: Int, h: Int, top: Int = 0) =
+                  LinearLayout.LayoutParams(w, h).apply { topMargin = dp(top) }
+
+              private fun label(s: String, size: Float, color: Int): TextView {
+                  val t = TextView(this)
+                  t.text = s
+                  t.textSize = size
+                  t.setTextColor(color)
+                  t.gravity = Gravity.CENTER
+                  return t
+              }
+
+              private fun button(s: String, onClick: () -> Unit): TextView {
+                  val t = label(s, 16f, dark)
+                  t.background = round(Color.WHITE, 24)
+                  t.setPadding(dp(20), dp(12), dp(20), dp(12))
+                  t.setOnClickListener { onClick() }
+                  return t
+              }
+
+              private fun iconBtn(s: String, onClick: () -> Unit): TextView {
+                  val t = label(s, 20f, Color.WHITE)
+                  t.setOnClickListener { onClick() }
+                  return t
+              }
+
+              private fun hideKb() {
+                  val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                  imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
+                  urlBar.clearFocus()
+              }
+
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+              // ---------------------------------------------------------------- conta
+
+              private fun loadUsers(): List<String> {
+                  val out = mutableListOf<String>()
+                  try {
+                      val arr = JSONArray(prefs.getString("users", "[]"))
+                      for (i in 0 until arr.length()) out.add(arr.getString(i))
+                  } catch (e: Exception) {
+                  }
+                  return out
+              }
+
+              private fun showLogin() {
+                  window.statusBarColor = dark
+                  root.removeAllViews()
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.gravity = Gravity.CENTER
+                  box.setPadding(dp(32), dp(32), dp(32), dp(32))
+                  box.addView(label("🌐", 64f, Color.WHITE))
+                  box.addView(label("Navegador Azul", 28f, Color.WHITE))
+                  box.addView(label("Crie sua conta", 16f, light))
+
+                  val input = EditText(this)
+                  input.hint = "Seu nome"
+                  input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                  input.background = round(Color.WHITE, 24)
+                  input.setPadding(dp(20), dp(12), dp(20), dp(12))
+                  box.addView(input, lp(MATCH, WRAP, 24))
+                  box.addView(button("Entrar") { login(input.text.toString()) }, lp(MATCH, WRAP, 12))
+
+                  val users = loadUsers()
+                  if (users.isNotEmpty()) {
+                      box.addView(label("ou continue como", 14f, light), lp(MATCH, WRAP, 24))
+                      for (n in users) box.addView(button("👤 $n") { login(n) }, lp(MATCH, WRAP, 8))
+                  }
+
+                  val sv = ScrollView(this)
+                  sv.isFillViewport = true
+                  sv.setBackgroundColor(blue)
+                  sv.addView(box, MATCH, WRAP)
+                  root.addView(sv, MATCH, MATCH)
+              }
+
+              private fun login(raw: String) {
+                  val name = raw.trim()
+                  if (name.isEmpty()) {
+                      toast("Digite seu nome")
+                      return
+                  }
+                  val us = loadUsers().toMutableList()
+                  if (!us.contains(name)) us.add(name)
+                  val arr = JSONArray()
+                  us.forEach { arr.put(it) }
+                  prefs.edit().putString("users", arr.toString()).putString("user", name).apply()
+                  enter(name)
+              }
+
+              private fun logout() {
+                  tabs.forEach {
+                      holder.removeView(it.web)
+                      it.web.destroy()
+                  }
+                  tabs.clear()
+                  cur = -1
+                  prefs.edit().remove("user").apply()
+                  showLogin()
+              }
+
+              private fun enter(name: String) {
+                  user = name
+                  buildUi()
+                  newTab(false, intent?.dataString)
+              }
+
+              // ---------------------------------------------------------------- interface do navegador
+
+              private fun buildUi() {
+                  root.removeAllViews()
+                  tabs.clear()
+                  cur = -1
+
+                  main = LinearLayout(this)
+                  main.orientation = LinearLayout.VERTICAL
+                  main.setBackgroundColor(Color.WHITE)
+
+                  topBar = LinearLayout(this)
+                  topBar.orientation = LinearLayout.HORIZONTAL
+                  topBar.gravity = Gravity.CENTER_VERTICAL
+                  topBar.setPadding(dp(8), dp(8), dp(8), dp(8))
+
+                  urlBar = EditText(this)
+                  urlBar.hint = "Pesquise ou digite o endereço"
+                  urlBar.setSingleLine()
+                  urlBar.textSize = 15f
+                  urlBar.imeOptions = EditorInfo.IME_ACTION_GO
+                  urlBar.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                  urlBar.background = round(Color.WHITE, 22)
+                  urlBar.setPadding(dp(16), dp(8), dp(16), dp(8))
+                  urlBar.setSelectAllOnFocus(true)
+                  urlBar.setOnEditorActionListener { _, action, _ ->
+                      if (action == EditorInfo.IME_ACTION_GO) {
+                          go(urlBar.text.toString())
+                          hideKb()
+                          true
+                      } else false
+                  }
+                  topBar.addView(urlBar, LinearLayout.LayoutParams(0, dp(44), 1f))
+                  topBar.addView(iconBtn("⟳") { reloadTab(tabs[cur]) }, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+                  progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
+                  progress.max = 100
+                  progress.progressTintList = ColorStateList.valueOf(Color.WHITE)
+                  progress.visibility = View.GONE
+
+                  holder = FrameLayout(this)
+
+                  bottomBar = LinearLayout(this)
+                  bottomBar.orientation = LinearLayout.HORIZONTAL
+                  bottomBar.gravity = Gravity.CENTER_VERTICAL
+
+                  val w = LinearLayout.LayoutParams(0, dp(48), 1f)
+                  bottomBar.addView(iconBtn("◀") { if (tabs[cur].web.canGoBack()) tabs[cur].web.goBack() }, w)
+                  bottomBar.addView(iconBtn("▶") { if (tabs[cur].web.canGoForward()) tabs[cur].web.goForward() },
+                      LinearLayout.LayoutParams(0, dp(48), 1f))
+                  bottomBar.addView(iconBtn("🏠") { loadHome(tabs[cur]) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                  tabsBtn = iconBtn("⧉1") { showTabs() }
+                  bottomBar.addView(tabsBtn, LinearLayout.LayoutParams(0, dp(48), 1f))
+                  val menu = iconBtn("⋮") { showMenu() }
+                  menu.setOnLongClickListener {
+                      showMenu()
+                      true
+                  }
+                  bottomBar.addView(menu, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+                  main.addView(topBar, LinearLayout.LayoutParams(MATCH, WRAP))
+                  main.addView(progress, LinearLayout.LayoutParams(MATCH, dp(3)))
+                  main.addView(holder, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  main.addView(bottomBar, LinearLayout.LayoutParams(MATCH, WRAP))
+                  root.addView(main, MATCH, MATCH)
+              }
+
+              private fun applyTheme(t: Tab) {
+                  val c = if (t.incognito) incogColor else blue
+                  topBar.setBackgroundColor(c)
+                  bottomBar.setBackgroundColor(c)
+                  window.statusBarColor = if (t.incognito) incogColor else dark
+              }
+
+              private fun updateTabsBtn() {
+                  tabsBtn.text = "⧉${tabs.size}"
+              }
+
+              private fun isHome(url: String?) = url == null || url.contains("home.local") || url == "about:blank"
+
+              private fun showUrl(url: String?) {
+                  if (urlBar.hasFocus()) return
+                  urlBar.setText(if (url == null || url.startsWith("data:") || isHome(url)) "" else url)
+              }
+
+              // ---------------------------------------------------------------- janelas (abas)
+
+              private fun createTab(incognito: Boolean): Tab {
+                  val w = WebView(this)
+                  val tab = Tab(w, incognito)
+                  setup(tab)
+                  tabs.add(tab)
+                  updateTabsBtn()
+                  return tab
+              }
+
+              private fun newTab(incognito: Boolean, url: String? = null) {
+                  val tab = createTab(incognito)
+                  select(tabs.size - 1)
+                  if (url.isNullOrBlank()) loadHome(tab) else tab.web.loadUrl(url)
+              }
+
+              private fun select(i: Int) {
+                  cur = i
+                  val t = tabs[i]
+                  holder.removeAllViews()
+                  (t.web.parent as? ViewGroup)?.removeView(t.web)
+                  holder.addView(t.web, FrameLayout.LayoutParams(MATCH, MATCH))
+                  urlBar.clearFocus()
+                  showUrl(t.web.url)
+                  progress.visibility = View.GONE
+                  updateTabsBtn()
+                  applyTheme(t)
+              }
+
+              private fun closeTab(i: Int) {
+                  val t = tabs.removeAt(i)
+                  holder.removeView(t.web)
+                  if (t.incognito) {
+                      t.web.clearCache(true)
+                      t.web.clearHistory()
+                      t.web.clearFormData()
+                  }
+                  t.web.destroy()
+                  if (tabs.isEmpty()) {
+                      newTab(false)
+                  } else {
+                      val ni = if (i < cur) cur - 1 else minOf(cur, tabs.size - 1)
+                      select(ni)
+                  }
+                  updateTabsBtn()
+              }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              private fun setup(tab: Tab) {
+                  val w = tab.web
+                  val s = w.settings
+                  s.javaScriptEnabled = true
+                  s.domStorageEnabled = true
+                  s.setSupportMultipleWindows(true)
+                  s.javaScriptCanOpenWindowsAutomatically = true
+                  s.builtInZoomControls = true
+                  s.displayZoomControls = false
+                  s.setSupportZoom(true)
+                  s.mediaPlaybackRequiresUserGesture = true
+                  if (tab.incognito) {
+                      s.saveFormData = false
+                  }
+                  applyMode(tab)
+                  applyFast(tab)
+                  w.setBackgroundColor(Color.WHITE)
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(w, !tab.incognito)
+
+                  w.webViewClient = object : WebViewClient() {
+                      override fun onPageStarted(v: WebView?, url: String?, f: Bitmap?) {
+                          if (tabs.getOrNull(cur)?.web === v) showUrl(url)
+                      }
+
+                      override fun onPageFinished(v: WebView?, url: String?) {
+                          if (tabs.getOrNull(cur)?.web === v) showUrl(url)
+                          if (!tab.incognito && v != null && url != null && url.startsWith("http") && !isHome(url)) {
+                              addHistory(v.title ?: url, url)
+                          }
+                      }
+
+                      override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
+                          val uri = r?.url ?: return false
+                          val sch = uri.scheme ?: return false
+                          if (sch == "http" || sch == "https" || sch == "about" || sch == "data" || sch == "file") return false
+                          try {
+                              startActivity(Intent(Intent.ACTION_VIEW, uri))
+                          } catch (e: Exception) {
+                          }
+                          return true
+                      }
+                  }
+
+                  w.webChromeClient = object : WebChromeClient() {
+                      override fun onProgressChanged(v: WebView?, p: Int) {
+                          if (tabs.getOrNull(cur)?.web === v) {
+                              progress.progress = p
+                              progress.visibility = if (p < 100) View.VISIBLE else View.GONE
+                          }
+                      }
+
+                      override fun onCreateWindow(
+                          v: WebView?, isDialog: Boolean, isUserGesture: Boolean, msg: Message?
+                      ): Boolean {
+                          if (msg == null) return false
+                          val transport = msg.obj as? WebView.WebViewTransport ?: return false
+                          val t = createTab(tab.incognito)
+                          t.mode = tab.mode
+                          applyMode(t)
+                          select(tabs.size - 1)
+                          transport.webView = t.web
+                          msg.sendToTarget()
+                          return true
+                      }
+
+                      override fun onCloseWindow(window: WebView?) {
+                          val i = tabs.indexOfFirst { it.web === window }
+                          if (i >= 0) closeTab(i)
+                      }
+
+                      override fun onShowCustomView(view: View?, cb: WebChromeClient.CustomViewCallback?) {
+                          if (view == null) return
+                          customView = view
+                          customCb = cb
+                          root.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
+                          main.visibility = View.GONE
+                      }
+
+                      override fun onHideCustomView() {
+                          hideCustom()
+                      }
+                  }
+
+                  w.setDownloadListener { url, ua, cd, mime, _ -> download(url, ua, cd, mime) }
+              }
+
+              private fun hideCustom() {
+                  customView?.let { root.removeView(it) }
+                  customCb?.onCustomViewHidden()
+                  customView = null
+                  customCb = null
+                  main.visibility = View.VISIBLE
+              }
+
+              private fun applyMode(tab: Tab) {
+                  val s = tab.web.settings
+                  when (tab.mode) {
+                      1 -> {
+                          s.userAgentString = desktopUA
+                          s.useWideViewPort = true
+                          s.loadWithOverviewMode = true
+                      }
+                      2 -> {
+                          s.userAgentString = tabletUA
+                          s.useWideViewPort = true
+                          s.loadWithOverviewMode = true
+                      }
+                      else -> {
+                          s.userAgentString = defaultUA
+                          s.useWideViewPort = true
+                          s.loadWithOverviewMode = false
+                      }
+                  }
+              }
+
+              private fun applyFast(tab: Tab) {
+                  val s = tab.web.settings
+                  s.blockNetworkImage = fast
+                  s.cacheMode = when {
+                      tab.incognito -> WebSettings.LOAD_NO_CACHE
+                      fast -> WebSettings.LOAD_CACHE_ELSE_NETWORK
+                      else -> WebSettings.LOAD_DEFAULT
+                  }
+              }
+
+              private fun reloadTab(t: Tab) {
+                  if (isHome(t.web.url)) loadHome(t) else t.web.reload()
+              }
+
+              // ---------------------------------------------------------------- navegação
+
+              private fun go(raw: String) {
+                  val q = raw.trim()
+                  if (q.isEmpty()) return
+                  val url = when {
+                      q.startsWith("http://") || q.startsWith("https://") -> q
+                      q.contains(" ") || !q.contains(".") -> "https://www.google.com/search?q=" + Uri.encode(q)
+                      else -> "https://$q"
+                  }
+                  tabs[cur].web.loadUrl(url)
+              }
+
+              private fun loadHome(tab: Tab) {
+                  tab.web.loadDataWithBaseURL("https://home.local/", homeHtml(tab.incognito), "text/html", "UTF-8", null)
+              }
+
+              private fun homeHtml(incog: Boolean): String {
+                  val name = TextUtils.htmlEncode(user)
+                  val bg = if (incog) "linear-gradient(160deg,#37474F,#263238)" else "linear-gradient(160deg,#42A5F5,#0D47A1)"
+                  val msg = if (incog) "🕶️ Janela anônima<br><small>O que você abrir aqui não fica no histórico.</small>"
+                  else "Olá, $name 👋"
+                  return """<!DOCTYPE html><html><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1"><title>Início</title>
+          <style>
+          body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;background:$bg;color:#fff;text-align:center}
+          h1{font-weight:500;margin:0 0 24px;padding:0 16px;line-height:1.3}
+          form{width:86%;max-width:480px}
+          input{width:100%;box-sizing:border-box;padding:14px 20px;border:0;border-radius:28px;font-size:16px;outline:none}
+          .links{margin-top:28px;display:flex;gap:12px;flex-wrap:wrap;justify-content:center;padding:0 16px}
+          .links a{color:#fff;background:rgba(255,255,255,.18);padding:10px 16px;border-radius:20px;text-decoration:none}
+          </style></head><body>
+          <h1>$msg</h1>
+          <form action="https://www.google.com/search" method="get"><input name="q" placeholder="Pesquisar no Google" autocomplete="off"></form>
+          <div class="links"><a href="https://www.google.com">Google</a><a href="https://www.youtube.com">YouTube</a><a href="https://pt.wikipedia.org">Wikipedia</a></div>
+          </body></html>"""
+              }
+
+              // ---------------------------------------------------------------- histórico
+
+              private fun loadHistory(): MutableList<Hist> {
+                  val out = mutableListOf<Hist>()
+                  try {
+                      val arr = JSONArray(prefs.getString("hist_$user", "[]"))
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          out.add(Hist(o.getString("t"), o.getString("u")))
+                      }
+                  } catch (e: Exception) {
+                  }
+                  return out
+              }
+
+              private fun saveHistory(l: List<Hist>) {
+                  val arr = JSONArray()
+                  for (h in l.take(500)) arr.put(JSONObject().put("t", h.title).put("u", h.url))
+                  prefs.edit().putString("hist_$user", arr.toString()).apply()
+              }
+
+              private fun addHistory(title: String, url: String) {
+                  val l = loadHistory()
+                  if (l.isNotEmpty() && l[0].url == url) return
+                  l.add(0, Hist(title, url))
+                  saveHistory(l)
+              }
+
+              private fun showHistory() {
+                  val l = loadHistory()
+                  fun rows() = l.map { it.title + "\n" + it.url }
+                  val adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, rows().toMutableList())
+                  val lv = ListView(this)
+                  lv.adapter = adapter
+                  val dlg = AlertDialog.Builder(this)
+                      .setTitle("📜 Histórico (segure para apagar um)")
+                      .setView(lv)
+                      .setNeutralButton("Apagar tudo") { _, _ ->
+                          AlertDialog.Builder(this)
+                              .setMessage("Apagar todo o histórico?")
+                              .setPositiveButton("Apagar") { _, _ ->
+                                  saveHistory(emptyList())
+                                  toast("Histórico apagado")
+                              }
+                              .setNegativeButton("Cancelar", null)
+                              .show()
+                      }
+                      .setNegativeButton("Fechar", null)
+                      .create()
+                  lv.setOnItemClickListener { _, _, pos, _ ->
+                      tabs[cur].web.loadUrl(l[pos].url)
+                      dlg.dismiss()
+                  }
+                  lv.setOnItemLongClickListener { _, _, pos, _ ->
+                      l.removeAt(pos)
+                      saveHistory(l)
+                      adapter.clear()
+                      adapter.addAll(rows())
+                      adapter.notifyDataSetChanged()
+                      true
+                  }
+                  dlg.show()
+              }
+
+              // ---------------------------------------------------------------- diálogos
+
+              private fun showTabs() {
+                  fun titles() = tabs.mapIndexed { i, t ->
+                      val n = t.web.title?.takeIf { it.isNotBlank() && it != "about:blank" } ?: "Nova janela"
+                      (if (i == cur) "● " else "") + (if (t.incognito) "🕶️ " else "") + n
+                  }
+                  val adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, titles().toMutableList())
+                  val lv = ListView(this)
+                  lv.adapter = adapter
+                  val dlg = AlertDialog.Builder(this)
+                      .setTitle("Janelas (segure para fechar)")
+                      .setView(lv)
+                      .setPositiveButton("➕ Nova") { _, _ -> newTab(false) }
+                      .setNeutralButton("🕶️ Anônima") { _, _ -> newTab(true) }
+                      .setNegativeButton("Fechar", null)
+                      .create()
+                  lv.setOnItemClickListener { _, _, pos, _ ->
+                      select(pos)
+                      dlg.dismiss()
+                  }
+                  lv.setOnItemLongClickListener { _, _, pos, _ ->
+                      closeTab(pos)
+                      adapter.clear()
+                      adapter.addAll(titles())
+                      adapter.notifyDataSetChanged()
+                      true
+                  }
+                  dlg.show()
+              }
+
+              private fun showMenu() {
+                  val t = tabs[cur]
+                  var dlg: AlertDialog? = null
+                  fun close() {
+                      dlg?.dismiss()
+                  }
+
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.setPadding(dp(16), dp(16), dp(16), dp(16))
+                  box.background = round(Color.WHITE, 20)
+
+                  val who = TextView(this)
+                  who.text = "👤 $user"
+                  who.textSize = 16f
+                  who.setTextColor(dark)
+                  who.setPadding(dp(4), 0, 0, dp(10))
+                  box.addView(who)
+
+                  val modes = LinearLayout(this)
+                  modes.orientation = LinearLayout.HORIZONTAL
+                  listOf("📱\nCelular", "💻\nComputador", "📟\nTablet").forEachIndexed { i, name ->
+                      val on = t.mode == i
+                      val chip = TextView(this)
+                      chip.text = name
+                      chip.gravity = Gravity.CENTER
+                      chip.textSize = 13f
+                      chip.setPadding(dp(4), dp(10), dp(4), dp(10))
+                      chip.setTextColor(if (on) Color.WHITE else dark)
+                      chip.background = round(if (on) blue else light, 14)
+                      chip.setOnClickListener {
+                          t.mode = i
+                          applyMode(t)
+                          reloadTab(t)
+                          close()
+                      }
+                      val p = LinearLayout.LayoutParams(0, WRAP, 1f)
+                      p.setMargins(dp(3), 0, dp(3), dp(8))
+                      modes.addView(chip, p)
+                  }
+                  box.addView(modes)
+
+                  fun item(s: String, act: () -> Unit) {
+                      val tv = TextView(this)
+                      tv.text = s
+                      tv.textSize = 16f
+                      tv.setTextColor(Color.parseColor("#212121"))
+                      tv.setPadding(dp(8), dp(12), dp(8), dp(12))
+                      tv.setOnClickListener {
+                          close()
+                          act()
+                      }
+                      box.addView(tv)
+                  }
+
+                  item("➕  Nova janela") { newTab(false) }
+                  item("🕶️  Nova janela anônima") { newTab(true) }
+                  item("📜  Histórico") { showHistory() }
+                  item(if (fast) "⚡  Modo rápido: LIGADO (desligar)" else "⚡  Modo rápido: desligado (ligar)") {
+                      fast = !fast
+                      prefs.edit().putBoolean("fast", fast).apply()
+                      tabs.forEach {
+                          applyFast(it)
+                          reloadTab(it)
+                      }
+                      toast(if (fast) "Modo rápido ligado: sem imagens, mais leve" else "Modo rápido desligado")
+                  }
+                  item("🔄  Recarregar") { reloadTab(t) }
+                  item("🗑️  Limpar cookies e cache") {
+                      CookieManager.getInstance().removeAllCookies(null)
+                      WebStorage.getInstance().deleteAllData()
+                      t.web.clearCache(true)
+                      toast("Dados limpos")
+                  }
+                  item("🔁  Trocar de conta") { logout() }
+
+                  val sv = ScrollView(this)
+                  sv.addView(box)
+                  val d = AlertDialog.Builder(this).setView(sv).create()
+                  dlg = d
+                  d.window?.setBackgroundDrawableResource(android.R.color.transparent)
+                  d.window?.setGravity(Gravity.BOTTOM)
+                  d.show()
+              }
+
+              // ---------------------------------------------------------------- downloads
+
+              private fun download(url: String, ua: String?, cd: String?, mime: String?) {
+                  try {
+                      val r = DownloadManager.Request(Uri.parse(url))
+                      if (mime != null) r.setMimeType(mime)
+                      if (ua != null) r.addRequestHeader("User-Agent", ua)
+                      val cookie = CookieManager.getInstance().getCookie(url)
+                      if (cookie != null) r.addRequestHeader("Cookie", cookie)
+                      r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                      r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, cd, mime))
+                      (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
+                      toast("Baixando…")
+                  } catch (e: Exception) {
+                      toast("Não foi possível baixar")
+                  }
+              }
+          }
+          FIM_ARQUIVO_5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Compilar APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Preparar APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk NavegadorAzul.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Navegador Azul v${{ github.run_number }}
+          files: NavegadorAzul.apk
