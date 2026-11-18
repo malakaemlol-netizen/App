@@ -977,7 +977,7 @@ jobs:
                   reloadBtn.setImageResource(if (l) R.drawable.ic_close else R.drawable.ic_refresh)
               }
 
-              private fun setProgress(p: Int) {
+              private fun setLoadProgress(p: Int) {
                   if (p < 100) {
                       progress.visibility = View.VISIBLE
                       ObjectAnimator.ofInt(progress, "progress", p).setDuration(120).start()
@@ -1171,7 +1171,7 @@ jobs:
 
                   w.webChromeClient = object : WebChromeClient() {
                       override fun onProgressChanged(v: WebView?, p: Int) {
-                          if (tabs.getOrNull(cur)?.web === v) setProgress(p)
+                          if (tabs.getOrNull(cur)?.web === v) setLoadProgress(p)
                       }
 
                       override fun onCreateWindow(
@@ -1350,7 +1350,7 @@ jobs:
                   }
                   tabs[cur].failedUrl = null
                   // mostra a barra de carregando na hora, antes mesmo da página responder
-                  setProgress(8)
+                  setLoadProgress(8)
                   tabs[cur].web.loadUrl(url)
               }
 
@@ -1974,38 +1974,4 @@ jobs:
                       r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                       r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
                       val id = (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
-                                            if (d.incog) {
-                          toast("Baixando… (janela anônima não guarda na lista)")
-                      } else {
-                          downloads().add(0, Dl(id, name, d.url, System.currentTimeMillis()))
-                          saveDownloads()
-                          toast("Baixando… veja em Menu > Downloads")
-                      }
-                  } catch (e: Exception) {
-                      toast("Não foi possível baixar")
-                  }
-              }
-          }
-          FIM_ARQUIVO_28
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Compilar APK
-        run: gradle assembleRelease --no-daemon
-
-      - name: Preparar APK
-        run: cp app/build/outputs/apk/release/app-release.apk NavegadorAzul.apk
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: Navegador Azul v${{ github.run_number }}
-          files: NavegadorAzul.apk
-                     
+         
