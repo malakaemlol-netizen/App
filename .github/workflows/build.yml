@@ -58,14 +58,21 @@ jobs:
                   // 21 = Android 5.0: funciona em celulares antigos e nos novos
                   minSdk = 21
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 3
+                  versionName = "3.0"
               }
 
               buildTypes {
                   release {
+                      // versão "release" é bem mais rápida que a "debug"
                       isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("debug")
                   }
+              }
+
+              lint {
+                  abortOnError = false
+                  checkReleaseBuilds = false
               }
 
               compileOptions {
@@ -102,7 +109,7 @@ jobs:
                   android:icon="@drawable/ic_launcher"
                   android:hardwareAccelerated="true"
                   android:usesCleartextTraffic="true"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  android:theme="@style/AppTheme">
 
                   <activity
                       android:name=".MainActivity"
@@ -125,6 +132,17 @@ jobs:
               </application>
           </manifest>
           FIM_ARQUIVO_4
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/styles.xml <<'FIM_ARQUIVO_S'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">#1E6FEB</item>
+                  <item name="android:statusBarColor">#0B3C9E</item>
+                  <item name="android:navigationBarColor">#1E6FEB</item>
+              </style>
+          </resources>
+          FIM_ARQUIVO_S
           mkdir -p app/src/main/res/drawable
           cat > app/src/main/res/drawable/ic_arrow_back.xml <<'FIM_ARQUIVO_5'
           <?xml version="1.0" encoding="utf-8"?>
@@ -302,6 +320,14 @@ jobs:
               <path android:fillColor="#FFFFFFFF" android:pathData="M7,4h10l2,6H5zM2,11h20v2H2z"/><path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineJoin="round" android:strokeLineCap="round" android:pathData="M5,17.5a3,3 0 1,0 6,0a3,3 0 1,0 -6,0M13,17.5a3,3 0 1,0 6,0a3,3 0 1,0 -6,0M11,17.5h2"/>
           </vector>
           FIM_ARQUIVO_26
+          cat > app/src/main/res/drawable/ic_star.xml <<'FIM_ARQUIVO_STAR'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFFFF" android:pathData="M12,17.27L18.18,21l-1.64,-7.03L22,9.24l-7.19,-0.61L12,2 9.19,8.63 2,9.24l5.46,4.73L5.82,21z"/>
+          </vector>
+          FIM_ARQUIVO_STAR
           cat > app/src/main/res/drawable/ic_launcher.xml <<'FIM_ARQUIVO_27'
           <?xml version="1.0" encoding="utf-8"?>
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -324,9 +350,12 @@ jobs:
           import android.app.AlertDialog
           import android.app.Dialog
           import android.app.DownloadManager
+          import android.content.BroadcastReceiver
           import android.content.ClipData
           import android.content.ClipboardManager
+          import android.content.Context
           import android.content.Intent
+          import android.content.IntentFilter
           import android.content.SharedPreferences
           import android.content.pm.PackageManager
           import android.content.res.ColorStateList
@@ -342,6 +371,7 @@ jobs:
           import android.os.Message
           import android.text.InputType
           import android.text.TextUtils
+          import android.text.format.Formatter
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.View
@@ -382,7 +412,11 @@ jobs:
 
           data class Hist(val title: String, val url: String)
 
-          class PendingDl(val url: String, val ua: String?, val cd: String?, val mime: String?)
+          data class Dl(val id: Long, val name: String, val url: String, val time: Long)
+
+          class DlState(val status: Int, val done: Long, val total: Long, val exists: Boolean)
+
+          class PendingDl(val url: String, val ua: String?, val cd: String?, val mime: String?, val incog: Boolean)
 
           class MainActivity : Activity() {
 
@@ -433,6 +467,25 @@ jobs:
               private var pendingGeoCb: GeolocationPermissions.Callback? = null
               private var pendingDl: PendingDl? = null
 
+              // listas guardadas na memória (evita ler o disco toda hora)
+              private var histCache: MutableList<Hist>? = null
+              private var favCache: MutableList<Hist>? = null
+              private var dlCache: MutableList<Dl>? = null
+
+              // avisa quando um download termina
+              private val dlReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context?, i: Intent?) {
+                      val id = i?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
+                      val d = downloads().firstOrNull { it.id == id } ?: return
+                      val st = dlState(id)
+                      if (st.exists && st.status == DownloadManager.STATUS_SUCCESSFUL) {
+                          toast("Download concluído: " + d.name)
+                      } else {
+                          toast("Falha no download: " + d.name)
+                      }
+                  }
+              }
+
               // ---------------------------------------------------------------- ciclo de vida
 
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -444,9 +497,21 @@ jobs:
                   fast = prefs.getBoolean("fast", false)
                   CookieManager.getInstance().setAcceptCookie(true)
                   root = FrameLayout(this)
+                  root.setBackgroundColor(blue)
                   setContentView(root)
+                  val f = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+                  if (Build.VERSION.SDK_INT >= 33) registerReceiver(dlReceiver, f, Context.RECEIVER_EXPORTED)
+                  else registerReceiver(dlReceiver, f)
                   val u = prefs.getString("user", null)
                   if (u.isNullOrBlank()) showLogin() else enter(u)
+              }
+
+              override fun onDestroy() {
+                  try {
+                      unregisterReceiver(dlReceiver)
+                  } catch (e: Exception) {
+                  }
+                  super.onDestroy()
               }
 
               override fun onNewIntent(intent: Intent?) {
@@ -611,7 +676,7 @@ jobs:
                       val c = parent.getChildAt(i)
                       c.alpha = 0f
                       c.translationY = dp(24).toFloat()
-                      c.animate().alpha(1f).translationY(0f).setStartDelay(i * 70L).setDuration(380)
+                      c.animate().alpha(1f).translationY(0f).setStartDelay(i * 50L).setDuration(300)
                           .setInterpolator(DecelerateInterpolator()).start()
                   }
               }
@@ -654,7 +719,7 @@ jobs:
                   }
                   d.show()
                   sv.translationY = dp(320).toFloat()
-                  sv.animate().translationY(0f).setDuration(260).setInterpolator(DecelerateInterpolator()).start()
+                  sv.animate().translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
               }
 
               private fun row(res: Int, s: String, trailing: String?, tint: Int, onClick: () -> Unit): LinearLayout {
@@ -773,12 +838,18 @@ jobs:
                   }
                   tabs.clear()
                   cur = -1
+                  histCache = null
+                  favCache = null
+                  dlCache = null
                   prefs.edit().remove("user").apply()
                   showLogin()
               }
 
               private fun enter(name: String) {
                   user = name
+                  histCache = null
+                  favCache = null
+                  dlCache = null
                   buildUi()
                   newTab(false, intent?.dataString)
               }
@@ -906,18 +977,18 @@ jobs:
                   reloadBtn.setImageResource(if (l) R.drawable.ic_close else R.drawable.ic_refresh)
               }
 
-              private fun updateProgress(p: Int) {
+              private fun setProgress(p: Int) {
                   if (p < 100) {
                       progress.visibility = View.VISIBLE
-                      ObjectAnimator.ofInt(progress, "progress", p).setDuration(160).start()
+                      ObjectAnimator.ofInt(progress, "progress", p).setDuration(120).start()
                   } else {
-                      ObjectAnimator.ofInt(progress, "progress", 100).setDuration(120).start()
+                      ObjectAnimator.ofInt(progress, "progress", 100).setDuration(100).start()
                       progress.postDelayed({
                           if (tabs.getOrNull(cur)?.loading != true) {
                               progress.visibility = View.INVISIBLE
                               progress.progress = 0
                           }
-                      }, 250)
+                      }, 200)
                   }
               }
 
@@ -957,8 +1028,6 @@ jobs:
                   holder.removeAllViews()
                   (t.web.parent as? ViewGroup)?.removeView(t.web)
                   holder.addView(t.web, FrameLayout.LayoutParams(MATCH, MATCH))
-                  t.web.alpha = 0f
-                  t.web.animate().alpha(1f).setDuration(220).start()
                   urlBar.clearFocus()
                   showUrl(t.web.url)
                   setLoadingUi(t.loading)
@@ -1102,7 +1171,7 @@ jobs:
 
                   w.webChromeClient = object : WebChromeClient() {
                       override fun onProgressChanged(v: WebView?, p: Int) {
-                          if (tabs.getOrNull(cur)?.web === v) updateProgress(p)
+                          if (tabs.getOrNull(cur)?.web === v) setProgress(p)
                       }
 
                       override fun onCreateWindow(
@@ -1175,7 +1244,7 @@ jobs:
                       }
                   }
 
-                  w.setDownloadListener { url, ua, cd, mime, _ -> download(url, ua, cd, mime) }
+                  w.setDownloadListener { url, ua, cd, mime, _ -> download(url, ua, cd, mime, tab.incognito) }
               }
 
               private fun hideCustom() {
@@ -1280,6 +1349,8 @@ jobs:
                       else -> "https://$q"
                   }
                   tabs[cur].failedUrl = null
+                  // mostra a barra de carregando na hora, antes mesmo da página responder
+                  setProgress(8)
                   tabs[cur].web.loadUrl(url)
               }
 
@@ -1295,8 +1366,7 @@ jobs:
           <meta name="viewport" content="width=device-width,initial-scale=1"><title>Erro</title>
           <style>
           body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;background:#F4F8FF;color:#1F2937;text-align:center;padding:24px;box-sizing:border-box}
-          svg{width:84px;height:84px;animation:pop .5s ease both}
-          @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+          svg{width:84px;height:84px}
           h2{margin:18px 0 6px}
           p{margin:0 0 24px;color:#6B7280}
           button{border:0;background:#1E6FEB;color:#fff;font-size:16px;padding:14px 28px;border-radius:28px}
@@ -1320,31 +1390,30 @@ jobs:
                           "<h1>Janela anônima</h1><p>O que você abrir aqui não fica no histórico.</p>"
                   else
                       "<h1 id=\"g\" data-n=\"$name\"></h1>"
+                  // atalhos dos favoritos na página inicial
+                  val favHtml = if (incog) "" else favs().take(6).joinToString("") {
+                      val t = if (it.title.isBlank()) it.url else it.title
+                      "<a href=\"" + TextUtils.htmlEncode(it.url) + "\"><i>" +
+                          TextUtils.htmlEncode(t.trim().take(1).uppercase()) + "</i>" +
+                          TextUtils.htmlEncode(t.take(12)) + "</a>"
+                  }
                   return """<!DOCTYPE html><html><head><meta charset="utf-8">
           <meta name="viewport" content="width=device-width,initial-scale=1"><title>Início</title>
           <style>
           *{box-sizing:border-box}
           body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;background:$bg;color:#fff;text-align:center;overflow:hidden}
-          .bl{position:fixed;border-radius:50%;background:#fff;opacity:.16;filter:blur(30px);animation:fl 9s ease-in-out infinite alternate}
-          .b1{width:260px;height:260px;top:-60px;left:-70px}
-          .b2{width:320px;height:320px;bottom:-110px;right:-90px;animation-delay:-4s}
-          @keyframes fl{to{transform:translate(30px,-36px) scale(1.15)}}
-          .in{opacity:0;transform:translateY(18px);animation:up .6s ease forwards}
-          @keyframes up{to{opacity:1;transform:none}}
           h1{font-weight:600;font-size:28px;margin:0 0 8px;padding:0 16px;line-height:1.25}
           p{margin:0 0 26px;opacity:.85;padding:0 24px}
           form{width:88%;max-width:480px;margin-top:22px}
-          input{width:100%;padding:16px 22px;border:0;border-radius:30px;font-size:16px;outline:none;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+          input{width:100%;padding:16px 22px;border:0;border-radius:30px;font-size:16px;outline:none}
           .links{margin-top:32px;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;padding:0 16px}
-          .links a{display:flex;flex-direction:column;align-items:center;color:#fff;text-decoration:none;font-size:13px;width:76px;transition:transform .15s}
-          .links a:active{transform:scale(.9)}
+          .links a{display:flex;flex-direction:column;align-items:center;color:#fff;text-decoration:none;font-size:13px;width:76px}
           .links i{width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-style:normal;font-size:22px;font-weight:700;margin-bottom:8px}
-          .d1{animation-delay:.1s}.d2{animation-delay:.2s}.d3{animation-delay:.3s}
           </style></head><body>
-          <div class="bl b1"></div><div class="bl b2"></div>
-          <div class="in">$head</div>
-          <form class="in d1" action="https://www.google.com/search" method="get"><input name="q" placeholder="Pesquisar no Google" autocomplete="off"></form>
-          <div class="links in d2">
+          <div>$head</div>
+          <form action="https://www.google.com/search" method="get"><input name="q" placeholder="Pesquisar no Google" autocomplete="off"></form>
+          <div class="links">
+          $favHtml
           <a href="https://www.google.com"><i>G</i>Google</a>
           <a href="https://www.youtube.com"><i>Y</i>YouTube</a>
           <a href="https://pt.wikipedia.org"><i>W</i>Wikipedia</a>
@@ -1357,12 +1426,12 @@ jobs:
           </body></html>"""
               }
 
-              // ---------------------------------------------------------------- histórico
+              // ---------------------------------------------------------------- listas (histórico, favoritos, downloads)
 
-              private fun loadHistory(): MutableList<Hist> {
+              private fun readList(key: String): MutableList<Hist> {
                   val out = mutableListOf<Hist>()
                   try {
-                      val arr = JSONArray(prefs.getString("hist_$user", "[]"))
+                      val arr = JSONArray(prefs.getString(key, "[]"))
                       for (i in 0 until arr.length()) {
                           val o = arr.getJSONObject(i)
                           out.add(Hist(o.getString("t"), o.getString("u")))
@@ -1372,44 +1441,102 @@ jobs:
                   return out
               }
 
-              private fun saveHistory(l: List<Hist>) {
+              private fun writeList(key: String, l: List<Hist>, max: Int) {
                   val arr = JSONArray()
-                  for (h in l.take(500)) arr.put(JSONObject().put("t", h.title).put("u", h.url))
-                  prefs.edit().putString("hist_$user", arr.toString()).apply()
+                  for (h in l.take(max)) arr.put(JSONObject().put("t", h.title).put("u", h.url))
+                  prefs.edit().putString(key, arr.toString()).apply()
+              }
+
+              private fun history(): MutableList<Hist> {
+                  histCache?.let { return it }
+                  val l = readList("hist_$user")
+                  histCache = l
+                  return l
+              }
+
+              // salva em segundo plano para não travar a navegação
+              private fun saveHistory() {
+                  val key = "hist_$user"
+                  val copy = ArrayList<Hist>(history())
+                  Thread { writeList(key, copy, 300) }.start()
               }
 
               private fun addHistory(title: String, url: String) {
-                  val l = loadHistory()
+                  val l = history()
                   if (l.isNotEmpty() && l[0].url == url) return
                   l.add(0, Hist(title, url))
-                  saveHistory(l)
+                  if (l.size > 300) l.removeAt(l.size - 1)
+                  saveHistory()
+              }
+
+              private fun favs(): MutableList<Hist> {
+                  favCache?.let { return it }
+                  val l = readList("fav_$user")
+                  favCache = l
+                  return l
+              }
+
+              private fun saveFavs() {
+                  writeList("fav_$user", favs(), 200)
+              }
+
+              private fun toggleFav(t: Tab) {
+                  val u = shownUrl(t.web.url)
+                  if (u == null || isHome(u) || u.startsWith("data:")) {
+                      toast("Abra um site primeiro")
+                      return
+                  }
+                  val l = favs()
+                  val ex = l.firstOrNull { it.url == u }
+                  if (ex != null) {
+                      l.remove(ex)
+                      toast("Removido dos favoritos")
+                  } else {
+                      val title = t.web.title?.takeIf { it.isNotBlank() } ?: u
+                      l.add(0, Hist(title, u))
+                      toast("Adicionado aos favoritos")
+                  }
+                  saveFavs()
               }
 
               private fun showHistory() {
-                  val l = loadHistory()
+                  listSheet("Histórico", "Nenhum site visitado ainda.", R.drawable.ic_history, history(),
+                      "Apagar todo o histórico?") { saveHistory() }
+              }
+
+              private fun showFavs() {
+                  listSheet("Favoritos", "Nenhum favorito ainda. Use o menu para adicionar.", R.drawable.ic_star, favs(),
+                      "Apagar todos os favoritos?") { saveFavs() }
+              }
+
+              // painel de lista usado pelo histórico e pelos favoritos
+              private fun listSheet(
+                  heading: String, empty: String, res: Int, items: MutableList<Hist>,
+                  clearMsg: String, onChange: () -> Unit
+              ) {
                   sheet { box, close ->
                       val head = LinearLayout(this)
                       head.orientation = LinearLayout.HORIZONTAL
                       head.gravity = Gravity.CENTER_VERTICAL
-                      head.addView(text("Histórico", 20f, ink, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                      head.addView(text(heading, 20f, ink, true), LinearLayout.LayoutParams(0, WRAP, 1f))
                       val list = LinearLayout(this)
                       list.orientation = LinearLayout.VERTICAL
 
                       fun fill() {
                           list.removeAllViews()
-                          if (l.isEmpty()) {
-                              list.addView(text("Nenhum site visitado ainda.", 15f, muted), lp(MATCH, WRAP, 20))
+                          if (items.isEmpty()) {
+                              list.addView(text(empty, 15f, muted), lp(MATCH, WRAP, 20))
                           }
-                          for (h in l.take(200)) {
+                          for (h in items.take(200)) {
                               val r = LinearLayout(this)
                               r.orientation = LinearLayout.HORIZONTAL
                               r.gravity = Gravity.CENTER_VERTICAL
                               r.setPadding(dp(8), dp(6), dp(0), dp(6))
-                              r.addView(icon(R.drawable.ic_history, blue), LinearLayout.LayoutParams(dp(22), dp(22)))
+                              r.addView(icon(res, blue), LinearLayout.LayoutParams(dp(22), dp(22)))
                               val col = LinearLayout(this)
                               col.orientation = LinearLayout.VERTICAL
                               col.setPadding(dp(14), 0, dp(8), 0)
-                              val t1 = text(h.title, 15f, ink)
+                              val t1 = text(if (h.title.isBlank()) h.url else h.title, 15f, ink)
                               t1.maxLines = 1
                               t1.ellipsize = TextUtils.TruncateAt.END
                               val t2 = text(h.url, 12f, muted)
@@ -1422,8 +1549,8 @@ jobs:
                               x.setPadding(dp(12), dp(12), dp(12), dp(12))
                               x.contentDescription = "Apagar"
                               x.setOnClickListener {
-                                  l.remove(h)
-                                  saveHistory(l)
+                                  items.remove(h)
+                                  onChange()
                                   fill()
                               }
                               r.addView(x, LinearLayout.LayoutParams(dp(44), dp(44)))
@@ -1439,12 +1566,12 @@ jobs:
 
                       val clear = pill("Apagar tudo", light, dark, R.drawable.ic_delete) {
                           AlertDialog.Builder(this)
-                              .setMessage("Apagar todo o histórico?")
+                              .setMessage(clearMsg)
                               .setPositiveButton("Apagar") { _, _ ->
-                                  l.clear()
-                                  saveHistory(l)
+                                  items.clear()
+                                  onChange()
                                   fill()
-                                  toast("Histórico apagado")
+                                  toast("Apagado")
                               }
                               .setNegativeButton("Cancelar", null)
                               .show()
@@ -1537,6 +1664,8 @@ jobs:
 
               private fun showMenu() {
                   val t = tabs[cur]
+                  val cu = shownUrl(t.web.url)
+                  val faved = cu != null && favs().any { it.url == cu }
                   sheet { box, close ->
                       val head = LinearLayout(this)
                       head.orientation = LinearLayout.HORIZONTAL
@@ -1590,6 +1719,9 @@ jobs:
 
                       item(R.drawable.ic_add, "Nova janela") { newTab(false) }
                       item(R.drawable.ic_incognito, "Nova janela anônima") { newTab(true) }
+                      item(R.drawable.ic_star, if (faved) "Remover dos favoritos" else "Adicionar aos favoritos") { toggleFav(t) }
+                      item(R.drawable.ic_star, "Favoritos") { showFavs() }
+                      item(R.drawable.ic_download, "Downloads") { showDownloads() }
                       item(R.drawable.ic_history, "Histórico") { showHistory() }
                       item(R.drawable.ic_share, "Compartilhar página") { shareUrl(shownUrl(t.web.url)) }
                       item(R.drawable.ic_copy, "Copiar link") { copyUrl(shownUrl(t.web.url)) }
@@ -1630,7 +1762,7 @@ jobs:
                       item(R.drawable.ic_copy, "Copiar link") { copyUrl(url) }
                       item(R.drawable.ic_share, "Compartilhar") { shareUrl(url) }
                       if (isImage) {
-                          item(R.drawable.ic_download, "Baixar imagem") { download(url, null, null, null) }
+                          item(R.drawable.ic_download, "Baixar imagem") { download(url, null, null, null, incog) }
                       }
                   }
               }
@@ -1661,8 +1793,164 @@ jobs:
 
               // ---------------------------------------------------------------- downloads
 
-              private fun download(url: String, ua: String?, cd: String?, mime: String?) {
-                  val d = PendingDl(url, ua, cd, mime)
+              private fun downloads(): MutableList<Dl> {
+                  dlCache?.let { return it }
+                  val out = mutableListOf<Dl>()
+                  try {
+                      val arr = JSONArray(prefs.getString("dl_$user", "[]"))
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          out.add(Dl(o.getLong("i"), o.getString("n"), o.getString("u"), o.getLong("t")))
+                      }
+                  } catch (e: Exception) {
+                  }
+                  dlCache = out
+                  return out
+              }
+
+              private fun saveDownloads() {
+                  val arr = JSONArray()
+                  for (d in downloads().take(200)) {
+                      arr.put(JSONObject().put("i", d.id).put("n", d.name).put("u", d.url).put("t", d.time))
+                  }
+                  prefs.edit().putString("dl_$user", arr.toString()).apply()
+              }
+
+              private fun dlState(id: Long): DlState {
+                  var c: android.database.Cursor? = null
+                  try {
+                      val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                      c = dm.query(DownloadManager.Query().setFilterById(id))
+                      if (c != null && c.moveToFirst()) {
+                          val st = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                          val done = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                          val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                          return DlState(st, done, total, true)
+                      }
+                  } catch (e: Exception) {
+                  } finally {
+                      c?.close()
+                  }
+                  return DlState(0, 0L, 0L, false)
+              }
+
+              private fun dlStatus(d: Dl): String {
+                  val s = dlState(d.id)
+                  if (!s.exists) return "Arquivo removido"
+                  return when (s.status) {
+                      DownloadManager.STATUS_SUCCESSFUL ->
+                          "Concluído · " + Formatter.formatShortFileSize(this, maxOf(s.total, s.done))
+                      DownloadManager.STATUS_FAILED -> "Falhou"
+                      DownloadManager.STATUS_RUNNING ->
+                          if (s.total > 0) "Baixando… " + (s.done * 100 / s.total) + "%" else "Baixando…"
+                      else -> "Aguardando…"
+                  }
+              }
+
+              private fun openDownload(id: Long) {
+                  try {
+                      val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                      val uri = dm.getUriForDownloadedFile(id)
+                      if (uri == null) {
+                          toast("Arquivo não encontrado")
+                          return
+                      }
+                      val mime = dm.getMimeTypeForDownloadedFile(id) ?: "*/*"
+                      val i = Intent(Intent.ACTION_VIEW)
+                      i.setDataAndType(uri, mime)
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                      startActivity(i)
+                  } catch (e: Exception) {
+                      toast("Nenhum app para abrir este arquivo")
+                  }
+              }
+
+              private fun showDownloads() {
+                  val l = downloads()
+                  sheet { box, close ->
+                      val head = LinearLayout(this)
+                      head.orientation = LinearLayout.HORIZONTAL
+                      head.gravity = Gravity.CENTER_VERTICAL
+                      head.addView(text("Downloads", 20f, ink, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                      val list = LinearLayout(this)
+                      list.orientation = LinearLayout.VERTICAL
+                      val labels = mutableListOf<Pair<Dl, TextView>>()
+
+                      fun refresh() {
+                          for ((d, tv) in labels) tv.text = dlStatus(d)
+                      }
+
+                      fun fill() {
+                          list.removeAllViews()
+                          labels.clear()
+                          if (l.isEmpty()) {
+                              list.addView(text("Nenhum download ainda.", 15f, muted), lp(MATCH, WRAP, 20))
+                          }
+                          for (d in l.take(100)) {
+                              val r = LinearLayout(this)
+                              r.orientation = LinearLayout.HORIZONTAL
+                              r.gravity = Gravity.CENTER_VERTICAL
+                              r.setPadding(dp(8), dp(6), dp(0), dp(6))
+                              r.addView(icon(R.drawable.ic_download, blue), LinearLayout.LayoutParams(dp(22), dp(22)))
+                              val col = LinearLayout(this)
+                              col.orientation = LinearLayout.VERTICAL
+                              col.setPadding(dp(14), 0, dp(8), 0)
+                              val t1 = text(d.name, 15f, ink)
+                              t1.maxLines = 1
+                              t1.ellipsize = TextUtils.TruncateAt.END
+                              val t2 = text(dlStatus(d), 12f, muted)
+                              labels.add(Pair(d, t2))
+                              col.addView(t1)
+                              col.addView(t2)
+                              r.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
+                              val x = icon(R.drawable.ic_close, muted)
+                              x.setPadding(dp(12), dp(12), dp(12), dp(12))
+                              x.contentDescription = "Remover da lista"
+                              x.setOnClickListener {
+                                  l.remove(d)
+                                  saveDownloads()
+                                  fill()
+                              }
+                              r.addView(x, LinearLayout.LayoutParams(dp(44), dp(44)))
+                              pressFx(r, 0.98f)
+                              r.setOnClickListener {
+                                  val s = dlState(d.id)
+                                  if (s.exists && s.status == DownloadManager.STATUS_SUCCESSFUL) {
+                                      close()
+                                      openDownload(d.id)
+                                  } else {
+                                      toast(dlStatus(d))
+                                  }
+                              }
+                              list.addView(r)
+                          }
+                      }
+
+                      val clear = pill("Limpar lista", light, dark, R.drawable.ic_delete) {
+                          l.clear()
+                          saveDownloads()
+                          fill()
+                          toast("Lista limpa (os arquivos continuam no celular)")
+                      }
+                      head.addView(clear, LinearLayout.LayoutParams(WRAP, dp(40)))
+                      box.addView(head)
+                      box.addView(list, lp(MATCH, WRAP, 8))
+                      fill()
+
+                      // atualiza o progresso enquanto o painel estiver aberto
+                      val runner = object : Runnable {
+                          override fun run() {
+                              if (!list.isAttachedToWindow) return
+                              refresh()
+                              list.postDelayed(this, 1000)
+                          }
+                      }
+                      list.postDelayed(runner, 1000)
+                  }
+              }
+
+              private fun download(url: String, ua: String?, cd: String?, mime: String?, incog: Boolean) {
+                  val d = PendingDl(url, ua, cd, mime, incog)
                   // Android 6 a 9 precisam de permissão para salvar em Downloads
                   if (Build.VERSION.SDK_INT in 23..28 &&
                       checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
@@ -1685,8 +1973,14 @@ jobs:
                       r.setTitle(name)
                       r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                       r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-                      (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
-                      toast("Baixando…")
+                      val id = (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
+                                            if (d.incog) {
+                          toast("Baixando… (janela anônima não guarda na lista)")
+                      } else {
+                          downloads().add(0, Dl(id, name, d.url, System.currentTimeMillis()))
+                          saveDownloads()
+                          toast("Baixando… veja em Menu > Downloads")
+                      }
                   } catch (e: Exception) {
                       toast("Não foi possível baixar")
                   }
@@ -1704,13 +1998,14 @@ jobs:
           gradle-version: '8.9'
 
       - name: Compilar APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleRelease --no-daemon
 
       - name: Preparar APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk NavegadorAzul.apk
+        run: cp app/build/outputs/apk/release/app-release.apk NavegadorAzul.apk
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: Navegador Azul v${{ github.run_number }}
           files: NavegadorAzul.apk
+                     
