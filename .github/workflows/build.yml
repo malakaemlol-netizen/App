@@ -906,7 +906,7 @@ jobs:
                   reloadBtn.setImageResource(if (l) R.drawable.ic_close else R.drawable.ic_refresh)
               }
 
-              private fun setProgress(p: Int) {
+              private fun updateProgress(p: Int) {
                   if (p < 100) {
                       progress.visibility = View.VISIBLE
                       ObjectAnimator.ofInt(progress, "progress", p).setDuration(160).start()
@@ -1102,7 +1102,7 @@ jobs:
 
                   w.webChromeClient = object : WebChromeClient() {
                       override fun onProgressChanged(v: WebView?, p: Int) {
-                          if (tabs.getOrNull(cur)?.web === v) setProgress(p)
+                          if (tabs.getOrNull(cur)?.web === v) updateProgress(p)
                       }
 
                       override fun onCreateWindow(
